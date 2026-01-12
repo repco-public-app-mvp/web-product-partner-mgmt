@@ -1668,106 +1668,260 @@
             { id: 'coordinator', name: 'Project Coordinator', color: '#a855f7', description: 'Coordinates activities' }
         ];
 
-        // ========== GITHUB API CONFIGURATION ==========
-        const GITHUB_CONFIG = {
-            owner: 'repco-public-app-mvp',  // Your GitHub username or org
-            repo: 'web-product-partner-mgmt',  // Your repo name
-            branch: 'main',  // Your branch name
-            token: null  // Will be loaded from API
+        // ========== SUPABASE CONFIGURATION ==========
+        const SUPABASE_URL = 'https://mxqjcaqgizeqnfkomemr.supabase.co';
+        const SUPABASE_ANON_KEY = 'sb_publishable_iEy-8OdWnK8Idw3PgLXn8Q_HrZt5fCP';
+
+        // Initialize Supabase client (simple fetch-based)
+        const supabase = {
+            from: (table) => ({
+                select: async (columns = '*') => {
+                    const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${columns}`, {
+                        headers: {
+                            'apikey': SUPABASE_ANON_KEY,
+                            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+                        }
+                    });
+                    if (!response.ok) throw new Error(`Failed to fetch ${table}`);
+                    return { data: await response.json(), error: null };
+                },
+                insert: async (data) => {
+                    const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+                        method: 'POST',
+                        headers: {
+                            'apikey': SUPABASE_ANON_KEY,
+                            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                            'Content-Type': 'application/json',
+                            'Prefer': 'return=representation'
+                        },
+                        body: JSON.stringify(data)
+                    });
+                    if (!response.ok) throw new Error(`Failed to insert into ${table}`);
+                    return { data: await response.json(), error: null };
+                },
+                update: async (data) => ({
+                    eq: async (column, value) => {
+                        const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${column}=eq.${value}`, {
+                            method: 'PATCH',
+                            headers: {
+                                'apikey': SUPABASE_ANON_KEY,
+                                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                                'Content-Type': 'application/json',
+                                'Prefer': 'return=representation'
+                            },
+                            body: JSON.stringify(data)
+                        });
+                        if (!response.ok) throw new Error(`Failed to update ${table}`);
+                        return { data: await response.json(), error: null };
+                    }
+                }),
+                delete: () => ({
+                    eq: async (column, value) => {
+                        const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${column}=eq.${value}`, {
+                            method: 'DELETE',
+                            headers: {
+                                'apikey': SUPABASE_ANON_KEY,
+                                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+                            }
+                        });
+                        if (!response.ok) throw new Error(`Failed to delete from ${table}`);
+                        return { data: null, error: null };
+                    }
+                })
+            })
         };
 
-        // Load GitHub token from Vercel serverless function
-        async function loadGithubToken() {
-            try {
-                const response = await fetch('/api/config');
-                if (response.ok) {
-                    const data = await response.json();
-                    GITHUB_CONFIG.token = data.githubToken;
-                    return data.githubToken;
+        // ========== SUPABASE SAVE FUNCTIONS ==========
+
+        // Helper function to convert camelCase to snake_case
+        function toSnakeCase(obj, fields) {
+            const result = {};
+            for (const [key, value] of Object.entries(obj)) {
+                if (fields.includes(key)) {
+                    // Convert camelCase to snake_case
+                    const snakeKey = key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+                    result[snakeKey] = value;
+                } else {
+                    result[key] = value;
                 }
-            } catch (error) {
-                console.error('Failed to load GitHub token:', error);
             }
-            return null;
+            return result;
         }
 
-        // Get GitHub token (load if not cached)
-        async function getGithubToken() {
-            if (!GITHUB_CONFIG.token) {
-                await loadGithubToken();
-            }
-            return GITHUB_CONFIG.token;
-        }
-
-        // ========== GITHUB API SAVE FUNCTION ==========
-
-        async function saveToFile(data, fileName, fileType) {
-            const jsonString = JSON.stringify(data, null, 2);
-
-            // Try to save to GitHub
+        // Save categories to Supabase
+        async function saveCategories() {
             try {
-                const token = await getGithubToken();
-
-                if (!token) {
-                    throw new Error('GitHub token not configured. Please set GITHUB_TOKEN in Vercel environment variables.');
-                }
-
-                const filePath = `data/${fileName}`;
-                const url = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${filePath}`;
-
-                // Get current file SHA (required for updating)
-                const getResponse = await fetch(url, {
-                    headers: {
-                        'Authorization': `token ${token}`,
-                        'Accept': 'application/vnd.github.v3+json'
+                // Delete all existing categories
+                const { data: existingCategories } = await supabase.from('categories').select('id');
+                if (existingCategories && existingCategories.length > 0) {
+                    for (const cat of existingCategories) {
+                        await supabase.from('categories').delete().eq('id', cat.id);
                     }
-                });
-
-                let sha = null;
-                if (getResponse.ok) {
-                    const fileData = await getResponse.json();
-                    sha = fileData.sha;
                 }
 
-                // Update or create file
-                const content = btoa(unescape(encodeURIComponent(jsonString)));
-                const updateResponse = await fetch(url, {
-                    method: 'PUT',
-                    headers: {
-                        'Authorization': `token ${token}`,
-                        'Accept': 'application/vnd.github.v3+json',
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        message: `Update ${fileName} via web interface`,
-                        content: content,
-                        sha: sha,
-                        branch: GITHUB_CONFIG.branch
-                    })
-                });
-
-                if (!updateResponse.ok) {
-                    const errorData = await updateResponse.json();
-                    throw new Error(errorData.message || 'Failed to save to GitHub');
+                // Insert new categories
+                if (categories.length > 0) {
+                    await supabase.from('categories').insert(categories);
                 }
 
-                showSuccess(`${fileName} saved to GitHub successfully! Changes are now live.`);
+                showSuccess('Categories saved to Supabase successfully!');
                 return true;
-
             } catch (error) {
-                console.error('Error saving to GitHub:', error);
-                showError(`Failed to save to GitHub: ${error.message}`);
+                console.error('Error saving categories to Supabase:', error);
+                showError(`Failed to save categories: ${error.message}`);
+                return false;
+            }
+        }
 
-                // Fallback: Download the file locally
-                const blob = new Blob([jsonString], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = fileName;
-                link.click();
-                URL.revokeObjectURL(url);
+        // Save roles to Supabase
+        async function saveRoles() {
+            try {
+                // Delete all existing roles
+                const { data: existingRoles } = await supabase.from('roles').select('id');
+                if (existingRoles && existingRoles.length > 0) {
+                    for (const role of existingRoles) {
+                        await supabase.from('roles').delete().eq('id', role.id);
+                    }
+                }
 
-                showWarning(`File downloaded as ${fileName}. GitHub save failed - please check token configuration.`);
+                // Insert new roles
+                if (roles.length > 0) {
+                    await supabase.from('roles').insert(roles);
+                }
+
+                showSuccess('Roles saved to Supabase successfully!');
+                return true;
+            } catch (error) {
+                console.error('Error saving roles to Supabase:', error);
+                showError(`Failed to save roles: ${error.message}`);
+                return false;
+            }
+        }
+
+        // Save members to Supabase
+        async function saveMembers() {
+            try {
+                // Delete all existing members
+                const { data: existingMembers } = await supabase.from('members').select('id');
+                if (existingMembers && existingMembers.length > 0) {
+                    for (const member of existingMembers) {
+                        await supabase.from('members').delete().eq('id', member.id);
+                    }
+                }
+
+                // Convert members to snake_case and insert
+                if (members.length > 0) {
+                    const membersToSave = members.map(m => ({
+                        id: m.id,
+                        first_name: m.firstName,
+                        last_name: m.lastName,
+                        email: m.email,
+                        phone: m.phone,
+                        company: m.company,
+                        department: m.department,
+                        title: m.title,
+                        location: m.location,
+                        roles: m.roles || [],
+                        skills: m.skills || [],
+                        notes: m.notes
+                    }));
+                    await supabase.from('members').insert(membersToSave);
+                }
+
+                showSuccess('Members saved to Supabase successfully!');
+                return true;
+            } catch (error) {
+                console.error('Error saving members to Supabase:', error);
+                showError(`Failed to save members: ${error.message}`);
+                return false;
+            }
+        }
+
+        // Save partners to Supabase
+        async function savePartners() {
+            try {
+                // Delete all existing partners
+                const { data: existingPartners } = await supabase.from('partners').select('id');
+                if (existingPartners && existingPartners.length > 0) {
+                    for (const partner of existingPartners) {
+                        await supabase.from('partners').delete().eq('id', partner.id);
+                    }
+                }
+
+                // Convert partners to snake_case and insert
+                if (partners.length > 0) {
+                    const partnersToSave = partners.map(p => ({
+                        id: p.id,
+                        name: p.name,
+                        categories: p.categories || [],
+                        location: p.location || {},
+                        contact: p.contact || {},
+                        scope: p.scope,
+                        agreement_type: p.agreementType,
+                        agreement_doc: p.agreementDoc,
+                        agreement_purpose: p.agreementPurpose,
+                        contract_value: p.contractValue,
+                        liabilities: p.liabilities,
+                        effective_date: p.effectiveDate,
+                        expiry_date: p.expiryDate,
+                        notes: p.notes,
+                        agreement: p.agreement || {}
+                    }));
+                    await supabase.from('partners').insert(partnersToSave);
+                }
+
+                showSuccess('Partners saved to Supabase successfully!');
+                return true;
+            } catch (error) {
+                console.error('Error saving partners to Supabase:', error);
+                showError(`Failed to save partners: ${error.message}`);
+                return false;
+            }
+        }
+
+        // Save projects to Supabase
+        async function saveProjects() {
+            try {
+                // Delete all existing projects
+                const { data: existingProjects } = await supabase.from('projects').select('id');
+                if (existingProjects && existingProjects.length > 0) {
+                    for (const project of existingProjects) {
+                        await supabase.from('projects').delete().eq('id', project.id);
+                    }
+                }
+
+                // Convert projects to snake_case and insert
+                if (projects.length > 0) {
+                    const projectsToSave = projects.map(proj => ({
+                        id: proj.id,
+                        partner_id: proj.partnerId,
+                        name: proj.name,
+                        scope: proj.scope,
+                        expectation: proj.expectation,
+                        start_time: proj.startTime,
+                        end_time: proj.endTime,
+                        cost: proj.cost || 0,
+                        progress: proj.progress || 0,
+                        phase: proj.phase,
+                        team_members: proj.teamMembers || [],
+                        kpis: proj.kpis || [],
+                        market_status: proj.marketStatus,
+                        profitability_status: proj.profitabilityStatus,
+                        scalability_status: proj.scalabilityStatus,
+                        resource_status: proj.resourceStatus,
+                        technology_status: proj.technologyStatus,
+                        budget_status: proj.budgetStatus,
+                        risk_status: proj.riskStatus,
+                        schedule_status: proj.scheduleStatus
+                    }));
+                    await supabase.from('projects').insert(projectsToSave);
+                }
+
+                showSuccess('Projects saved to Supabase successfully!');
+                return true;
+            } catch (error) {
+                console.error('Error saving projects to Supabase:', error);
+                showError(`Failed to save projects: ${error.message}`);
                 return false;
             }
         }
@@ -1792,57 +1946,99 @@
             }
         }
 
-        // Load Data from JSON files
+        // Load Data from Supabase
         async function loadData() {
             try {
-                // Load all data files
+                // Load all data from Supabase tables
                 const responses = await Promise.allSettled([
-                    fetch('./data/categories.json'),
-                    fetch('./data/roles.json'),
-                    fetch('./data/members.json'),
-                    fetch('./data/partners.json'),
-                    fetch('./data/projects.json')
+                    supabase.from('categories').select(),
+                    supabase.from('roles').select(),
+                    supabase.from('members').select(),
+                    supabase.from('partners').select(),
+                    supabase.from('projects').select()
                 ]);
 
                 // Categories
-                if (responses[0].status === 'fulfilled' && responses[0].value.ok) {
-                    categories = await responses[0].value.json();
+                if (responses[0].status === 'fulfilled' && !responses[0].value.error) {
+                    categories = responses[0].value.data || [];
                 } else {
                     categories = JSON.parse(JSON.stringify(DEFAULT_CATEGORIES));
                 }
 
                 // Roles
-                if (responses[1].status === 'fulfilled' && responses[1].value.ok) {
-                    roles = await responses[1].value.json();
+                if (responses[1].status === 'fulfilled' && !responses[1].value.error) {
+                    roles = responses[1].value.data || [];
                 } else {
                     roles = JSON.parse(JSON.stringify(DEFAULT_ROLES));
                 }
 
-                // Members
-                if (responses[2].status === 'fulfilled' && responses[2].value.ok) {
-                    members = await responses[2].value.json();
+                // Members - Convert snake_case to camelCase
+                if (responses[2].status === 'fulfilled' && !responses[2].value.error) {
+                    members = (responses[2].value.data || []).map(m => ({
+                        id: m.id,
+                        firstName: m.first_name,
+                        lastName: m.last_name,
+                        email: m.email,
+                        phone: m.phone,
+                        company: m.company,
+                        department: m.department,
+                        title: m.title,
+                        location: m.location,
+                        roles: m.roles || [],
+                        skills: m.skills || [],
+                        notes: m.notes
+                    }));
                 } else {
                     members = [];
                 }
 
-                // Partners
-                if (responses[3].status === 'fulfilled' && responses[3].value.ok) {
-                    partners = await responses[3].value.json();
-                    partners = partners.map(p => {
-                        if (p.category && typeof p.category === 'string') {
-                            return { ...p, categories: [p.category] };
-                        } else if (!p.categories) {
-                            return { ...p, categories: [] };
-                        }
-                        return p;
-                    });
+                // Partners - Convert snake_case to camelCase
+                if (responses[3].status === 'fulfilled' && !responses[3].value.error) {
+                    partners = (responses[3].value.data || []).map(p => ({
+                        id: p.id,
+                        name: p.name,
+                        categories: p.categories || [],
+                        location: p.location || {},
+                        contact: p.contact || {},
+                        scope: p.scope,
+                        agreementType: p.agreement_type,
+                        agreementDoc: p.agreement_doc,
+                        agreementPurpose: p.agreement_purpose,
+                        contractValue: p.contract_value,
+                        liabilities: p.liabilities,
+                        effectiveDate: p.effective_date,
+                        expiryDate: p.expiry_date,
+                        notes: p.notes,
+                        agreement: p.agreement || {}
+                    }));
                 } else {
                     partners = [];
                 }
 
-                // Projects
-                if (responses[4].status === 'fulfilled' && responses[4].value.ok) {
-                    projects = await responses[4].value.json();
+                // Projects - Convert snake_case to camelCase
+                if (responses[4].status === 'fulfilled' && !responses[4].value.error) {
+                    projects = (responses[4].value.data || []).map(proj => ({
+                        id: proj.id,
+                        partnerId: proj.partner_id,
+                        name: proj.name,
+                        scope: proj.scope,
+                        expectation: proj.expectation,
+                        startTime: proj.start_time,
+                        endTime: proj.end_time,
+                        cost: proj.cost || 0,
+                        progress: proj.progress || 0,
+                        phase: proj.phase,
+                        teamMembers: proj.team_members || [],
+                        kpis: proj.kpis || [],
+                        marketStatus: proj.market_status,
+                        profitabilityStatus: proj.profitability_status,
+                        scalabilityStatus: proj.scalability_status,
+                        resourceStatus: proj.resource_status,
+                        technologyStatus: proj.technology_status,
+                        budgetStatus: proj.budget_status,
+                        riskStatus: proj.risk_status,
+                        scheduleStatus: proj.schedule_status
+                    }));
                 } else {
                     projects = [];
                 }
@@ -1857,10 +2053,10 @@
                 });
                 partners.sort((a, b) => a.name.localeCompare(b.name));
 
-                console.log('Data loaded:', partners.length, 'partners,', projects.length, 'projects,', 
+                console.log('Data loaded from Supabase:', partners.length, 'partners,', projects.length, 'projects,',
                            categories.length, 'categories,', members.length, 'members,', roles.length, 'roles');
             } catch (error) {
-                showError('Error loading data: ' + error.message);
+                showError('Error loading data from Supabase: ' + error.message);
                 categories = JSON.parse(JSON.stringify(DEFAULT_CATEGORIES));
                 roles = JSON.parse(JSON.stringify(DEFAULT_ROLES));
                 members = [];
@@ -2488,7 +2684,7 @@
                 showError('All categories must have a name');
                 return;
             }
-            await saveToFile(categories, 'categories.json', 'categories');
+            await saveCategories();
         }
 
         function uploadCategoriesJSON(event) {
@@ -2633,7 +2829,7 @@
                 showError('All roles must have a name');
                 return;
             }
-            await saveToFile(roles, 'roles.json', 'roles');
+            await saveRoles();
         }
 
         function uploadRolesJSON(event) {
@@ -2848,7 +3044,7 @@
         }
 
         async function saveAllMembers() {
-            await saveToFile(members, 'members.json', 'members');
+            await saveMembers();
         }
 
         function uploadMembersJSON(event) {
@@ -3072,7 +3268,7 @@
         }
 
         async function saveAllPartnersData() {
-            await saveToFile(partners, 'partners.json', 'partners');
+            await savePartners();
         }
 
         function uploadPartnersJSON(event) {
@@ -3520,7 +3716,7 @@
         }
 
         async function saveAllProjectsData() {
-            await saveToFile(projects, 'projects.json', 'projects');
+            await saveProjects();
             updateResourceCharts();
         }
 
