@@ -1668,41 +1668,97 @@
             { id: 'coordinator', name: 'Project Coordinator', color: '#a855f7', description: 'Coordinates activities' }
         ];
 
-        // ========== FILE SYSTEM ACCESS API FUNCTIONS ==========
+        // ========== GITHUB API CONFIGURATION ==========
+        const GITHUB_CONFIG = {
+            owner: 'repco-public-app-mvp',  // Your GitHub username or org
+            repo: 'web-product-partner-mgmt',  // Your repo name
+            branch: 'main',  // Your branch name
+            token: null  // Will be loaded from API
+        };
+
+        // Load GitHub token from Vercel serverless function
+        async function loadGithubToken() {
+            try {
+                const response = await fetch('/api/config');
+                if (response.ok) {
+                    const data = await response.json();
+                    GITHUB_CONFIG.token = data.githubToken;
+                    return data.githubToken;
+                }
+            } catch (error) {
+                console.error('Failed to load GitHub token:', error);
+            }
+            return null;
+        }
+
+        // Get GitHub token (load if not cached)
+        async function getGithubToken() {
+            if (!GITHUB_CONFIG.token) {
+                await loadGithubToken();
+            }
+            return GITHUB_CONFIG.token;
+        }
+
+        // ========== GITHUB API SAVE FUNCTION ==========
 
         async function saveToFile(data, fileName, fileType) {
             const jsonString = JSON.stringify(data, null, 2);
-            
-            // Try to use File System Access API (Chrome, Edge)
-            if ('showSaveFilePicker' in window) {
-                try {
-                    const handle = await window.showSaveFilePicker({
-                        suggestedName: fileName,
-                        types: [{
-                            description: 'JSON Files',
-                            accept: { 'application/json': ['.json'] }
-                        }]
-                    });
-                    
-                    const writable = await handle.createWritable();
-                    await writable.write(jsonString);
-                    await writable.close();
-                    
-                    fileHandles[fileType] = handle;
-                    
-                    showSuccess(`${fileName} saved successfully!`);
-                    return true;
-                } catch (error) {
-                    if (error.name === 'AbortError') {
-                        showWarning('Save cancelled by user');
-                        return false;
-                    }
-                    console.error('Error saving file:', error);
-                    showError('Error saving file: ' + error.message);
-                    return false;
+
+            // Try to save to GitHub
+            try {
+                const token = await getGithubToken();
+
+                if (!token) {
+                    throw new Error('GitHub token not configured. Please set GITHUB_TOKEN in Vercel environment variables.');
                 }
-            } else {
-                // Fallback: Download the file
+
+                const filePath = `data/${fileName}`;
+                const url = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${filePath}`;
+
+                // Get current file SHA (required for updating)
+                const getResponse = await fetch(url, {
+                    headers: {
+                        'Authorization': `token ${token}`,
+                        'Accept': 'application/vnd.github.v3+json'
+                    }
+                });
+
+                let sha = null;
+                if (getResponse.ok) {
+                    const fileData = await getResponse.json();
+                    sha = fileData.sha;
+                }
+
+                // Update or create file
+                const content = btoa(unescape(encodeURIComponent(jsonString)));
+                const updateResponse = await fetch(url, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `token ${token}`,
+                        'Accept': 'application/vnd.github.v3+json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: `Update ${fileName} via web interface`,
+                        content: content,
+                        sha: sha,
+                        branch: GITHUB_CONFIG.branch
+                    })
+                });
+
+                if (!updateResponse.ok) {
+                    const errorData = await updateResponse.json();
+                    throw new Error(errorData.message || 'Failed to save to GitHub');
+                }
+
+                showSuccess(`${fileName} saved to GitHub successfully! Changes are now live.`);
+                return true;
+
+            } catch (error) {
+                console.error('Error saving to GitHub:', error);
+                showError(`Failed to save to GitHub: ${error.message}`);
+
+                // Fallback: Download the file locally
                 const blob = new Blob([jsonString], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const link = document.createElement('a');
@@ -1710,9 +1766,9 @@
                 link.download = fileName;
                 link.click();
                 URL.revokeObjectURL(url);
-                
-                showWarning(`File downloaded as ${fileName}. Please replace the file in ./data/ folder manually.`);
-                return true;
+
+                showWarning(`File downloaded as ${fileName}. GitHub save failed - please check token configuration.`);
+                return false;
             }
         }
 
